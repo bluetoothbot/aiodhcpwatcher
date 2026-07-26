@@ -859,7 +859,7 @@ async def test_execute_restart_preserves_if_indexes() -> None:
     """
     seen: list[tuple[int, ...] | None] = []
 
-    def _capture(if_indexes: object = None) -> None:
+    def _capture(socks: object = None, if_indexes: object = None) -> None:
         seen.append(
             tuple(if_indexes)  # type: ignore[arg-type]
             if if_indexes is not None
