@@ -226,7 +226,6 @@ class AIODHCPWatcher:
         if self._shutdown:
             _LOGGER.debug("Not starting watcher because it is shutdown")
             return
-<<<<<<< HEAD
         # Materialise to a tuple so the auto-restart path can iterate again and
         # so generators / consumed iterables don't quietly become empty on retry.
         self._if_indexes = tuple(if_indexes) if if_indexes is not None else None
