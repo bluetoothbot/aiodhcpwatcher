@@ -1510,3 +1510,40 @@ def test_handler_survives_malformed_wire_options(options: bytes) -> None:
     assert isinstance(requests[0].ip_address, str)
     assert isinstance(requests[0].hostname, str)
     assert requests[0].mac_address == "00:11:22:33:44:55"
+async def test_make_listen_socket_fcntl_preserves_existing_flags() -> None:
+    """
+    The fcntl fallback must OR O_NONBLOCK in, not overwrite the flags.
+
+    F_SETFL replaces every settable status flag at once, so passing O_NONBLOCK
+    on its own silently clears whatever else was set on the descriptor
+    (O_APPEND, O_ASYNC, O_DIRECT). scapy reads F_GETFL first in its own
+    ``set_nonblock`` for exactly this reason, and this fallback is the live
+    path on Linux, where the AF_PACKET listen socket exposes neither
+    ``set_nonblock`` nor ``pcap_fd``.
+    """
+    import fcntl
+
+    watcher = AIODHCPWatcher(lambda data: None)
+    r, w = os.pipe()
+    try:
+        fcntl.fcntl(w, fcntl.F_SETFL, os.O_APPEND)
+
+        class _Sock:
+            def __init__(self, fd: int) -> None:
+                self._fd = fd
+                self.iface = MockIface()
+
+            def fileno(self) -> int:
+                return self._fd
+
+        fake_iface = MagicMock()
+        fake_iface.l2listen.return_value = lambda **kwargs: _Sock(w)
+        with patch("scapy.interfaces.resolve_iface", return_value=fake_iface):
+            watcher._make_listen_socket(FILTER)
+
+        flags = fcntl.fcntl(w, fcntl.F_GETFL)
+        assert flags & os.O_NONBLOCK
+        assert flags & os.O_APPEND
+    finally:
+        os.close(r)
+        os.close(w)
