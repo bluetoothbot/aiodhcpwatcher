@@ -94,6 +94,13 @@ def make_packet_handler(
     return _handle_dhcp_packet
 
 
+def _close_socks(socks: list[tuple[int, socket.socket, int]]) -> None:
+    """Close sockets that were opened but never registered with the loop."""
+    for _, sock, _ in socks:
+        sock.close()
+    socks.clear()
+
+
 class AIODHCPWatcher:
     """Class to watch dhcp requests."""
 
@@ -150,9 +157,18 @@ class AIODHCPWatcher:
         self._socks = []
 
     def _start(
-        self, if_indexes: Iterable[int] | None = None
+        self,
+        socks: list[tuple[int, socket.socket, int]],
+        if_indexes: Iterable[int] | None = None,
     ) -> Callable[["Packet"], None] | None:
-        """Start watching for dhcp packets."""
+        """
+        Open a listen socket per interface into ``socks``.
+
+        Runs in an executor. It appends to the caller's list instead of
+        ``self._socks`` so that a caller which never gets to install them --
+        because it aborted or was cancelled -- still owns the sockets and can
+        close them.
+        """
         _init_scapy()
         # disable scapy promiscuous mode as we do not need it
         conf.sniff_promisc = 0
@@ -171,7 +187,7 @@ class AIODHCPWatcher:
                 if sock := self._make_listen_socket(FILTER, if_index):
                     if if_index is None:
                         if_index = sock.iface.index
-                    self._socks.append((if_index, sock, sock.fileno()))
+                    socks.append((if_index, sock, sock.fileno()))
             except (Scapy_Exception, OSError) as ex:
                 # One interface failing must not abort the others; async_start()
                 # already degrades per-interface for add_reader/permission
@@ -195,15 +211,28 @@ class AIODHCPWatcher:
         # Materialise to a tuple so the auto-restart path can iterate again and
         # so generators / consumed iterables don't quietly become empty on retry.
         self._if_indexes = tuple(if_indexes) if if_indexes is not None else None
-        if not (
-            _handle_dhcp_packet := await self._loop.run_in_executor(
-                None, self._start, self._if_indexes
-            )
-        ):
+        socks: list[tuple[int, socket.socket, int]] = []
+        future = self._loop.run_in_executor(
+            None, self._start, socks, self._if_indexes
+        )
+        try:
+            # Shielded: stop() cancels _restart_task, which may be parked right
+            # here. Cancelling the await would not stop _start from running to
+            # completion in its thread and opening sockets, and no line after
+            # the await would run to close them.
+            _handle_dhcp_packet = await asyncio.shield(future)
+        except asyncio.CancelledError:
+            future.add_done_callback(lambda _: _close_socks(socks))
+            raise
+        if not _handle_dhcp_packet:
+            # _start may have opened sockets before giving up.
+            _close_socks(socks)
             return
         if self._shutdown:  # may change during the executor call
             _LOGGER.debug("Not starting watcher because it is shutdown after init")  # type: ignore[unreachable]
+            _close_socks(socks)
             return
+        self._socks = socks
         for if_index, sock, fileno in list(self._socks):
             if fileno == -1:
                 # On some platforms (notably Windows) scapy's listen socket does
