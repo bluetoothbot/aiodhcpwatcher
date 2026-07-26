@@ -243,11 +243,9 @@ class AIODHCPWatcher:
             raise
         if not _handle_dhcp_packet:
             # _start may have opened sockets before giving up.
+            # No handler means the packet filter itself is broken -- a permanent
+            # failure, unlike a socket that is not up yet. Nothing to retry.
             _close_socks(socks)
-            if self._socket_unavailable:
-                # A cold-boot race: retry, otherwise the very first failure is
-                # permanent even though the interface may come up seconds later.
-                self.restart_soon()
             return
         if self._shutdown:  # may change during the executor call
             _LOGGER.debug("Not starting watcher because it is shutdown after init")  # type: ignore[unreachable]

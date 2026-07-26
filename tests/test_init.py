@@ -728,9 +728,9 @@ def test_all_exports_are_importable() -> None:
     import aiodhcpwatcher
 
     for name in aiodhcpwatcher.__all__:
-        assert hasattr(
-            aiodhcpwatcher, name
-        ), f"{name!r} is declared in __all__ but not defined in the module"
+        assert hasattr(aiodhcpwatcher, name), (
+            f"{name!r} is declared in __all__ but not defined in the module"
+        )
 
 
 def test_async_start_is_exported() -> None:
@@ -1485,6 +1485,8 @@ async def test_failed_initial_start_does_not_arm_after_shutdown() -> None:
         await watcher.async_start()
 
     assert watcher._restart_timer is None
+
+
 # (label, raw DHCP option bytes appended after a well-formed message-type=REQUEST)
 _MALFORMED_DHCP_OPTIONS: list[tuple[str, bytes]] = [
     ("requested_addr shorter than an IPv4 address", b"\x32\x02\x0a\x00"),
@@ -1583,3 +1585,12 @@ async def test_make_listen_socket_fcntl_preserves_existing_flags() -> None:
     finally:
         os.close(r)
         os.close(w)
+
+
+@pytest.mark.asyncio
+async def test_restart_soon_does_nothing_once_shutdown() -> None:
+    """A shutdown watcher must never arm another recovery attempt."""
+    watcher = AIODHCPWatcher(lambda data: None)
+    watcher.shutdown()
+    watcher.restart_soon()
+    assert watcher._restart_timer is None
