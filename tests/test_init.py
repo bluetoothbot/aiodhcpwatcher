@@ -859,7 +859,10 @@ async def test_execute_restart_preserves_if_indexes() -> None:
     """
     seen: list[tuple[int, ...] | None] = []
 
-    def _capture(if_indexes: object = None) -> None:
+    def _capture(
+        socks: list[tuple[int, object, int]] | None = None,
+        if_indexes: object = None,
+    ) -> None:
         seen.append(
             tuple(if_indexes)  # type: ignore[arg-type]
             if if_indexes is not None
@@ -1510,6 +1513,9 @@ def test_handler_survives_malformed_wire_options(options: bytes) -> None:
     assert isinstance(requests[0].ip_address, str)
     assert isinstance(requests[0].hostname, str)
     assert requests[0].mac_address == "00:11:22:33:44:55"
+
+
+@pytest.mark.asyncio
 async def test_make_listen_socket_fcntl_preserves_existing_flags() -> None:
     """
     The fcntl fallback must OR O_NONBLOCK in, not overwrite the flags.
