@@ -115,9 +115,12 @@ class AIODHCPWatcher:
         self._restart_timer: asyncio.TimerHandle | None = None
         self._restart_task: asyncio.Task[None] | None = None
         self._if_indexes: tuple[int, ...] | None = None
+        self._socket_unavailable = False
 
     def restart_soon(self) -> None:
         """Restart the watcher soon."""
+        if self._shutdown:
+            return
         if not self._restart_timer:
             _LOGGER.debug("Restarting watcher in %s seconds", AUTO_RECOVER_TIME)
             self._restart_timer = self._loop.call_later(
@@ -125,8 +128,18 @@ class AIODHCPWatcher:
             )
 
     def _clear_restart_task(self, task: asyncio.Task[None]) -> None:
-        """Clear the restart task."""
+        """Clear the restart task, re-arming recovery if the restart failed."""
         self._restart_task = None
+        if task.cancelled() or self._shutdown:
+            return
+        if exc := task.exception():
+            _LOGGER.error("Unexpected error restarting watcher: %s", exc)
+        elif self._socks:
+            # Readers are installed again; recovery is complete.
+            return
+        # The interface may still be down. Keep retrying, otherwise a single
+        # failed attempt leaves the watcher permanently deaf.
+        self.restart_soon()
 
     def _execute_restart(self) -> None:
         """Execute the restart."""
@@ -172,6 +185,7 @@ class AIODHCPWatcher:
         _init_scapy()
         # disable scapy promiscuous mode as we do not need it
         conf.sniff_promisc = 0
+        self._socket_unavailable = False
 
         try:
             self._verify_working_pcap(FILTER)
@@ -191,7 +205,11 @@ class AIODHCPWatcher:
             except (Scapy_Exception, OSError) as ex:
                 # One interface failing must not abort the others; async_start()
                 # already degrades per-interface for add_reader/permission
-                # errors, so socket creation should be symmetric.
+                # errors, so socket creation should be symmetric. The interface
+                # may simply not be up yet, unlike a missing filter or a loop
+                # that cannot watch the fd, so record it: only this is worth
+                # retrying.
+                self._socket_unavailable = True
                 if os.geteuid() == 0:
                     _LOGGER.error("Cannot watch for dhcp packets: %s", ex)
                 else:
@@ -208,6 +226,7 @@ class AIODHCPWatcher:
         if self._shutdown:
             _LOGGER.debug("Not starting watcher because it is shutdown")
             return
+<<<<<<< HEAD
         # Materialise to a tuple so the auto-restart path can iterate again and
         # so generators / consumed iterables don't quietly become empty on retry.
         self._if_indexes = tuple(if_indexes) if if_indexes is not None else None
@@ -225,7 +244,10 @@ class AIODHCPWatcher:
             future.add_done_callback(lambda _: _close_socks(socks))
             raise
         if not _handle_dhcp_packet:
-            # _start may have opened sockets before giving up.
+            # _start may have opened sockets before giving up. Only the pcap
+            # filter can fail this way now that a per-interface socket error
+            # merely skips that interface, and a broken filter does not fix
+            # itself, so there is nothing to retry here.
             _close_socks(socks)
             return
         if self._shutdown:  # may change during the executor call
@@ -272,7 +294,18 @@ class AIODHCPWatcher:
                 sock.close()
                 self._socks.remove((if_index, sock, fileno))
         if len(self._socks) == 0:
-            _LOGGER.debug("Not starting watcher because no readers added")
+            if self._socket_unavailable:
+                # A cold-boot race: nothing is listening because no interface
+                # could be opened yet. Retry, otherwise the very first failure
+                # is permanent even though the interface may come up seconds
+                # later. Only retried when nothing is listening -- restarting
+                # over live readers would orphan them.
+                self.restart_soon()
+                return
+            # Every socket was dropped by the loop. Unlike a socket that is not
+            # available yet, this does not resolve itself, so it is reported
+            # once rather than retried.
+            _LOGGER.warning("Not starting watcher because no readers added")
 
     def _on_data(
         self, handle_dhcp_packet: Callable[["Packet"], None], sock: Any
